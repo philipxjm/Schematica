@@ -32,6 +32,11 @@ public class NoMicroblocks implements IMicroblocks {
     }
 
     @Override
+    public List<PartSpec> placedParts(World world, int x, int y, int z) {
+        return Collections.emptyList();
+    }
+
+    @Override
     public MicroblockClick planClick(World world, EntityPlayer player, int x, int y, int z, PartSpec part,
         double reach) {
         return null;

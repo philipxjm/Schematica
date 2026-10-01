@@ -1,7 +1,9 @@
 package com.github.lunatrius.schematica.client.printer;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockLiquid;
@@ -51,6 +53,18 @@ public class SchematicPrinter {
 
     private SchematicWorld schematic = null;
     private byte[][][] timeout = null;
+    /** Microblock clicks so far, by "x,y,z part": what the block held when we clicked, and how often we tried. */
+    private final Map<String, MicroblockAttempt> microblockAttempts = new HashMap<>();
+
+    private static final class MicroblockAttempt {
+
+        List<PartSpec> before;
+        int tries;
+        boolean gaveUp;
+    }
+
+    /** Clicks per microblock before giving up when nothing at all gets placed (out of reach, lag...). */
+    private static final int MICROBLOCK_TRIES = 3;
 
     public boolean isEnabled() {
         return this.isEnabled;
@@ -84,6 +98,7 @@ public class SchematicPrinter {
     }
 
     public void refresh() {
+        this.microblockAttempts.clear();
         if (this.schematic != null) {
             this.timeout = new byte[this.schematic.getWidth()][this.schematic.getHeight()][this.schematic.getLength()];
         } else {
@@ -100,12 +115,17 @@ public class SchematicPrinter {
         final Vector3i trans = ClientProxy.playerPosition.clone()
             .sub(this.schematic.position.x, this.schematic.position.y, this.schematic.position.z)
             .toVector3i();
-        final int minX = Math.max(0, trans.x - 3);
-        final int maxX = Math.min(this.schematic.getWidth(), trans.x + 4);
-        final int minY = Math.max(0, trans.y - 3);
-        final int maxY = Math.min(this.schematic.getHeight(), trans.y + 4);
-        final int minZ = Math.max(0, trans.z - 3);
-        final int maxZ = Math.min(this.schematic.getLength(), trans.z + 4);
+        // As far as the server accepts clicks: within reach + 1 of the clicked block's centre
+        // (NetHandlerPlayServer.processPlayerBlockPlacement), measured from the player's feet.
+        final double range = this.minecraft.playerController.getBlockReachDistance() + 1;
+        final int r = (int) Math.ceil(range);
+        final int minX = Math.max(0, trans.x - r);
+        final int maxX = Math.min(this.schematic.getWidth(), trans.x + r + 1);
+        final int minY = Math.max(0, trans.y - r);
+        final int maxY = Math.min(this.schematic.getHeight(), trans.y + r + 1);
+        final int minZ = Math.max(0, trans.z - r);
+        final int maxZ = Math.min(this.schematic.getLength(), trans.z + r + 1);
+        final double maxDistSq = (range - 0.25) * (range - 0.25);
 
         final int slot = player.inventory.currentItem;
         final boolean isSneaking = player.isSneaking();
@@ -119,6 +139,12 @@ public class SchematicPrinter {
 
             for (int x = minX; x < maxX; x++) {
                 for (int z = minZ; z < maxZ; z++) {
+                    final double dx = this.schematic.position.x + x + 0.5 - player.posX;
+                    final double dy = this.schematic.position.y + y + 0.5 - player.boundingBox.minY;
+                    final double dz = this.schematic.position.z + z + 0.5 - player.posZ;
+                    if (dx * dx + dy * dy + dz * dz >= maxDistSq) {
+                        continue;
+                    }
                     try {
                         if (placeBlock(world, player, x, y, z)) {
                             player.inventory.currentItem = slot;
@@ -210,9 +236,37 @@ public class SchematicPrinter {
         }
 
         final double reach = this.minecraft.playerController.getBlockReachDistance();
-        for (PartSpec part : microblocks.partsOf(this.schematic.getTileEntity(x, y, z))) {
-            if (microblocks.isPlaced(world, wx, wy, wz, part)) {
+        final List<PartSpec> wanted = microblocks.partsOf(this.schematic.getTileEntity(x, y, z));
+        final List<PartSpec> placed = microblocks.placedParts(world, wx, wy, wz);
+        for (PartSpec part : wanted) {
+            if (placed.contains(part)) {
                 continue;
+            }
+            final String key = wx + "," + wy + "," + wz + " " + part;
+            final MicroblockAttempt attempt = this.microblockAttempts.get(key);
+            if (attempt != null) {
+                if (attempt.gaveUp) {
+                    continue;
+                }
+                // A part that is neither in the schematic nor there before our click: it went on the wrong slot.
+                // Stop, rather than add another wrong part on every retry.
+                for (PartSpec now : placed) {
+                    if (!attempt.before.contains(now) && !wanted.contains(now)) {
+                        attempt.gaveUp = true;
+                        Reference.logger.warn(
+                            "Microblock printing: placed {} instead of {} at {} {} {}; skipping it, place it by hand",
+                            now,
+                            part,
+                            wx,
+                            wy,
+                            wz);
+                        break;
+                    }
+                }
+                if (attempt.gaveUp || attempt.tries >= MICROBLOCK_TRIES) {
+                    attempt.gaveUp = true;
+                    continue;
+                }
             }
             final ItemStack itemStack = microblocks.itemFor(part);
             if (itemStack == null || (!this.minecraft.playerController.isInCreativeMode()
@@ -228,6 +282,10 @@ public class SchematicPrinter {
             if (!swapToItem(player.inventory, itemStack, true, true)) {
                 return false;
             }
+            final MicroblockAttempt record = attempt != null ? attempt : new MicroblockAttempt();
+            record.before = placed;
+            record.tries++;
+            this.microblockAttempts.put(key, record);
 
             final float yaw = player.rotationYaw, pitch = player.rotationPitch;
             player.sendQueue

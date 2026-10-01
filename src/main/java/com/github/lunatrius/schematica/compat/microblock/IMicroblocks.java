@@ -27,9 +27,12 @@ public interface IMicroblocks {
     /** True if the world already has this exact part at the position. */
     boolean isPlaced(World world, int x, int y, int z, PartSpec part);
 
+    /** The microblocks the world has at the position. */
+    List<PartSpec> placedParts(World world, int x, int y, int z);
+
     /**
-     * How to place the part at the world position (x, y, z) by right-clicking a neighbouring block face while
-     * holding its item, or null if no reachable face gives exactly this part.
+     * How to place the part at the world position (x, y, z) by right-clicking a face next to it (a full block's, or
+     * an empty space's) while holding its item, or null if no reachable face gives exactly this part.
      */
     MicroblockClick planClick(World world, EntityPlayer player, int x, int y, int z, PartSpec part, double reach);
 }

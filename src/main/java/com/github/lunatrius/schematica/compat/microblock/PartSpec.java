@@ -21,6 +21,20 @@ public final class PartSpec {
     }
 
     @Override
+    public boolean equals(Object o) {
+        if (!(o instanceof PartSpec)) {
+            return false;
+        }
+        final PartSpec other = (PartSpec) o;
+        return this.shape == other.shape && this.id.equals(other.id) && this.material.equals(other.material);
+    }
+
+    @Override
+    public int hashCode() {
+        return (this.id.hashCode() * 31 + this.material.hashCode()) * 31 + this.shape;
+    }
+
+    @Override
     public String toString() {
         return this.id + "/" + this.material + "/" + this.shape;
     }

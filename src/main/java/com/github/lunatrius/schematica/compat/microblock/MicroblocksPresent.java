@@ -5,6 +5,7 @@ import java.util.Collections;
 import java.util.List;
 
 import net.minecraft.block.Block;
+import net.minecraft.client.entity.EntityClientPlayerMP;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NBTTagCompound;
@@ -36,17 +37,17 @@ import codechicken.multipart.handler.MultipartSaveLoad;
  * Placing a microblock: Forge Multipart ignores the hit position in the click packet and re-traces from the player's
  * eyes along their look direction (ItemMicroPart.onItemUse, RayTracer.retraceBlock), then picks the slot from where
  * that ray meets the clicked face. Clicking the outer face of a full block places into the space beside it. So the
- * printer looks at a chosen point on a neighbouring block's face and clicks it. Points are chosen by running Forge
- * Multipart's own placement logic (MicroblockPlacement) on a grid over each candidate face, keeping points whose
- * neighbourhood gives the same part, so small differences between the client's and the server's eye position do not
- * change the result.
+ * printer looks at a chosen point on a neighbouring face (a full block's, or an empty space's) and clicks it. Points
+ * are chosen by running Forge Multipart's own placement logic (MicroblockPlacement) on a grid over each candidate
+ * face and aiming for the middle of the region that gives the part, so small differences between the client's and
+ * the server's view of the player do not change the result.
  */
 public class MicroblocksPresent implements IMicroblocks {
 
     /** Grid steps per block edge when searching a face for click points. */
     private static final int GRID = 32;
-    /** Neighbourhood (grid steps) that must give the same part for a point to count as robust. */
-    private static final int MARGIN = 2;
+    /** Clearance (grid steps, 1/8 block) from a region's edge that counts as safely inside it. */
+    private static final int CLEARANCE_GOOD = 4;
 
     @Override
     public boolean isMultipart(Block block) {
@@ -102,6 +103,26 @@ public class MicroblocksPresent implements IMicroblocks {
     }
 
     @Override
+    public List<PartSpec> placedParts(World world, int x, int y, int z) {
+        final TileEntity tileEntity = world.getTileEntity(x, y, z);
+        if (!(tileEntity instanceof TileMultipart)) {
+            return Collections.emptyList();
+        }
+        final List<PartSpec> parts = new ArrayList<>();
+        for (Object o : ((TileMultipart) tileEntity).jPartList()) {
+            if (o instanceof Microblock) {
+                final Microblock microblock = (Microblock) o;
+                parts.add(
+                    new PartSpec(
+                        microblock.getType(),
+                        MicroMaterialRegistry$.MODULE$.materialName(microblock.getMaterial()),
+                        microblock.shape()));
+            }
+        }
+        return parts;
+    }
+
+    @Override
     public MicroblockClick planClick(World world, EntityPlayer player, int x, int y, int z, PartSpec part,
         double reach) {
         final CommonMicroClass microClass = classFor(part.id);
@@ -117,14 +138,15 @@ public class MicroblocksPresent implements IMicroblocks {
         final Vec3 eye = serverEye(player);
 
         MicroblockClick best = null;
-        int bestScore = -1;
-        double bestDistance = Double.MAX_VALUE;
+        double[] bestScore = null;
 
         for (ForgeDirection direction : ForgeDirection.VALID_DIRECTIONS) {
-            // Click the face of the neighbour that points at the target space.
+            // Click the face of the neighbour that points at the target space: a full block's face, or, with no
+            // block there, the face of the empty space (the server ray-traces it as a full cube all the same).
             final int cx = x - direction.offsetX, cy = y - direction.offsetY, cz = z - direction.offsetZ;
             final int side = direction.ordinal();
-            if (!isFullBlock(world, cx, cy, cz) || !facesEye(eye, cx, cy, cz, direction)) {
+            final boolean solid = isFullBlock(world, cx, cy, cz);
+            if (!solid && !world.isAirBlock(cx, cy, cz) || !facesEye(eye, cx, cy, cz, direction)) {
                 continue;
             }
 
@@ -151,26 +173,56 @@ public class MicroblocksPresent implements IMicroblocks {
                     if (!ok[i][j]) {
                         continue;
                     }
-                    int score = 0;
-                    for (int di = -MARGIN; di <= MARGIN; di++) {
-                        for (int dj = -MARGIN; dj <= MARGIN; dj++) {
-                            final int a = i + di, b = j + dj;
-                            if (a >= 0 && a <= GRID && b >= 0 && b <= GRID && ok[a][b]) {
-                                score++;
-                            }
-                        }
-                    }
+                    // Aim for the middle of the region that gives this part: the click lands off target when the
+                    // server's view of the player differs a little from ours.
+                    final int clearance = clearance(ok, i, j);
                     final Vec3 point = facePoint(cx, cy, cz, direction, i / (double) GRID, j / (double) GRID);
-                    final double distance = eye.distanceTo(point);
-                    if (score > bestScore || (score == bestScore && distance < bestDistance)) {
+                    final double[] score = { Math.min(clearance, CLEARANCE_GOOD), solid ? 1 : 0, clearance,
+                        steepness(eye, point, direction) };
+                    if (bestScore == null || compare(score, bestScore) > 0) {
                         bestScore = score;
-                        bestDistance = distance;
                         best = lookAt(eye, cx, cy, cz, side, point);
                     }
                 }
             }
         }
         return best;
+    }
+
+    /** Largest r such that every grid point within r steps (Chebyshev) also gives the part. */
+    private static int clearance(boolean[][] ok, int i, int j) {
+        for (int r = 1; r <= GRID; r++) {
+            for (int di = -r; di <= r; di++) {
+                for (int dj = -r; dj <= r; dj++) {
+                    if (Math.max(Math.abs(di), Math.abs(dj)) != r) {
+                        continue;
+                    }
+                    final int a = i + di, b = j + dj;
+                    if (a < 0 || a > GRID || b < 0 || b > GRID || !ok[a][b]) {
+                        return r - 1;
+                    }
+                }
+            }
+        }
+        return GRID;
+    }
+
+    /** How square-on the look ray meets the face (1 = perpendicular); off-angle rays amplify aim errors. */
+    private static double steepness(Vec3 eye, Vec3 point, ForgeDirection direction) {
+        final Vec3 ray = eye.subtract(point)
+            .normalize();
+        return Math
+            .abs(ray.xCoord * direction.offsetX + ray.yCoord * direction.offsetY + ray.zCoord * direction.offsetZ);
+    }
+
+    private static int compare(double[] a, double[] b) {
+        for (int k = 0; k < a.length; k++) {
+            final int c = Double.compare(a[k], b[k]);
+            if (c != 0) {
+                return c;
+            }
+        }
+        return 0;
     }
 
     private static CommonMicroClass classFor(String id) {
@@ -201,14 +253,16 @@ public class MicroblocksPresent implements IMicroblocks {
     }
 
     /**
-     * Where the server traces from: feet + 1.62, 0.08 lower while sneaking (the printer sneaks). On the client posY
-     * is already eye height, so derive the feet from the bounding box.
+     * Where the server traces from: feet + 1.62, 0.08 lower while sneaking (the printer sneaks), at the position the
+     * server last received from this client (oldPos*, sent each tick), not where the client has moved since.
      */
     private static Vec3 serverEye(EntityPlayer player) {
-        return Vec3.createVectorHelper(
-            player.posX,
-            player.boundingBox.minY + 1.62 - (player.isSneaking() ? 0.08 : 0),
-            player.posZ);
+        final double sneak = player.isSneaking() ? 0.08 : 0;
+        if (player instanceof EntityClientPlayerMP) {
+            final EntityClientPlayerMP client = (EntityClientPlayerMP) player;
+            return Vec3.createVectorHelper(client.oldPosX, client.oldMinY + 1.62 - sneak, client.oldPosZ);
+        }
+        return Vec3.createVectorHelper(player.posX, player.boundingBox.minY + 1.62 - sneak, player.posZ);
     }
 
     /** A plain full-cube block: its face is where the server's ray trace will land. */
