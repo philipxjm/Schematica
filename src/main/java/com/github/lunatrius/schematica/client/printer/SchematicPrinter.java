@@ -58,6 +58,11 @@ public class SchematicPrinter {
     private byte[][][] timeout = null;
     /** Microblock clicks so far, by "x,y,z part": what the block held when we clicked, and how often we tried. */
     private final Map<String, MicroblockAttempt> microblockAttempts = new HashMap<>();
+    /** World spaces we clicked microblocks into, by print pass number; see IMicroblocks.BusySpaces. */
+    private final Map<Long, Long> microblockClickedSpaces = new HashMap<>();
+    private long printPass;
+    /** Print passes a clicked space stays off-limits as an empty-space click target (unless it shows up first). */
+    private static final int BUSY_PASSES = 40;
     /** Parts already logged as having no reachable face, so the log gets one line each, not one per tick. */
     private final Set<String> microblockUnreachableLogged = new HashSet<>();
 
@@ -104,6 +109,7 @@ public class SchematicPrinter {
 
     public void refresh() {
         this.microblockAttempts.clear();
+        this.microblockClickedSpaces.clear();
         this.microblockUnreachableLogged.clear();
         if (this.schematic != null) {
             this.timeout = new byte[this.schematic.getWidth()][this.schematic.getHeight()][this.schematic.getLength()];
@@ -113,6 +119,7 @@ public class SchematicPrinter {
     }
 
     public boolean print() {
+        this.printPass++;
         final EntityClientPlayerMP player = this.minecraft.thePlayer;
         final World world = this.minecraft.theWorld;
 
@@ -288,7 +295,8 @@ public class SchematicPrinter {
                 && getInventorySlotWithItem(player.inventory, itemStack, true) < 0)) {
                 continue;
             }
-            final MicroblockClick click = microblocks.planClick(world, player, wx, wy, wz, part, reach);
+            final MicroblockClick click = microblocks
+                .planClick(world, player, wx, wy, wz, part, reach, this::isBusySpace);
             if (click == null) {
                 if (this.microblockUnreachableLogged.add(key)) {
                     MicroblockLog.log("no safe click point for %s at %d %d %d within reach (yet)", part, wx, wy, wz);
@@ -332,6 +340,7 @@ public class SchematicPrinter {
                 player.rotationPitch = pitch;
                 continue;
             }
+            this.microblockClickedSpaces.put(spaceKey(wx, wy, wz), this.printPass);
             player.sendQueue
                 .addToSendQueue(new C03PacketPlayer.C05PacketPlayerLook(click.yaw, click.pitch, player.onGround));
             final boolean success = placeBlock(
@@ -359,6 +368,22 @@ public class SchematicPrinter {
         // Done with this space for now (placed what we could; the rest has no item or no safe click yet).
         this.timeout[x][y][z] = (byte) ConfigurationHandler.timeout;
         return false;
+    }
+
+    private static long spaceKey(int x, int y, int z) {
+        return ((long) x & 0x3FFFFFF) << 38 | ((long) y & 0xFFF) << 26 | (long) z & 0x3FFFFFF;
+    }
+
+    private boolean isBusySpace(int x, int y, int z) {
+        final Long pass = this.microblockClickedSpaces.get(spaceKey(x, y, z));
+        if (pass == null) {
+            return false;
+        }
+        if (this.printPass - pass > BUSY_PASSES) {
+            this.microblockClickedSpaces.remove(spaceKey(x, y, z));
+            return false;
+        }
+        return true;
     }
 
     private boolean isSolid(World world, int x, int y, int z, ForgeDirection side) {

@@ -37,8 +37,8 @@ public class NoMicroblocks implements IMicroblocks {
     }
 
     @Override
-    public MicroblockClick planClick(World world, EntityPlayer player, int x, int y, int z, PartSpec part,
-        double reach) {
+    public MicroblockClick planClick(World world, EntityPlayer player, int x, int y, int z, PartSpec part, double reach,
+        BusySpaces busy) {
         return null;
     }
 

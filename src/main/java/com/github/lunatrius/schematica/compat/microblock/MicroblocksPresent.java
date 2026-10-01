@@ -133,8 +133,8 @@ public class MicroblocksPresent implements IMicroblocks {
     }
 
     @Override
-    public MicroblockClick planClick(World world, EntityPlayer player, int x, int y, int z, PartSpec part,
-        double reach) {
+    public MicroblockClick planClick(World world, EntityPlayer player, int x, int y, int z, PartSpec part, double reach,
+        BusySpaces busy) {
         final FaceMasks masks = masks(world, player, x, y, z, part);
         if (masks == null) {
             return null;
@@ -148,7 +148,8 @@ public class MicroblocksPresent implements IMicroblocks {
             final int side = direction.ordinal();
             final boolean[][] mask = masks.ok[side];
             final int cx = x - direction.offsetX, cy = y - direction.offsetY, cz = z - direction.offsetZ;
-            if (mask == null || !facesEye(eye, cx, cy, cz, direction)) {
+            if (mask == null || !facesEye(eye, cx, cy, cz, direction)
+                || !masks.solid[side] && busy.isBusy(cx, cy, cz)) {
                 continue;
             }
 
