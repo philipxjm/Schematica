@@ -35,4 +35,16 @@ public interface IMicroblocks {
      * an empty space's) while holding its item, or null if no reachable face gives exactly this part.
      */
     MicroblockClick planClick(World world, EntityPlayer player, int x, int y, int z, PartSpec part, double reach);
+
+    /**
+     * What the server will place for this click, worked out the way it does: the player's current look (set it to
+     * the click's yaw and pitch first), the clicked block's own ray trace from the server's eye position, then Forge
+     * Multipart's placement logic. Null when it gives exactly the part at (x, y, z); otherwise a description of what
+     * it would do instead.
+     */
+    String mismatch(World world, EntityPlayer player, int x, int y, int z, MicroblockClick click, PartSpec part,
+        double reach);
+
+    /** The eye position the clicks are aimed from, for logs. */
+    String describeEye(EntityPlayer player);
 }

@@ -46,8 +46,11 @@ public class MicroblocksPresent implements IMicroblocks {
 
     /** Grid steps per block edge when searching a face for click points. */
     private static final int GRID = 32;
-    /** Clearance (grid steps, 1/8 block) from a region's edge that counts as safely inside it. */
-    private static final int CLEARANCE_GOOD = 4;
+    /**
+     * Eye-position error (blocks) a click should survive; beyond this, prefer clicking a real block over an empty
+     * space.
+     */
+    private static final double TOLERANCE_GOOD = 0.1;
 
     @Override
     public boolean isMultipart(Block block) {
@@ -173,12 +176,13 @@ public class MicroblocksPresent implements IMicroblocks {
                     if (!ok[i][j]) {
                         continue;
                     }
-                    // Aim for the middle of the region that gives this part: the click lands off target when the
-                    // server's view of the player differs a little from ours.
+                    // Aim where the click survives the most error in our idea of the server's eye position:
+                    // deep inside the region that gives the part, and square-on, since a ray that skims the face
+                    // moves its hit point far for a small change in eye height.
                     final int clearance = clearance(ok, i, j);
                     final Vec3 point = facePoint(cx, cy, cz, direction, i / (double) GRID, j / (double) GRID);
-                    final double[] score = { Math.min(clearance, CLEARANCE_GOOD), solid ? 1 : 0, clearance,
-                        steepness(eye, point, direction) };
+                    final double tolerance = (clearance + 0.5) / GRID * steepness(eye, point, direction);
+                    final double[] score = { Math.min(tolerance, TOLERANCE_GOOD), solid ? 1 : 0, tolerance };
                     if (bestScore == null || compare(score, bestScore) > 0) {
                         bestScore = score;
                         best = lookAt(eye, cx, cy, cz, side, point);
@@ -187,6 +191,66 @@ public class MicroblocksPresent implements IMicroblocks {
             }
         }
         return best;
+    }
+
+    @Override
+    public String mismatch(World world, EntityPlayer player, int x, int y, int z, MicroblockClick click, PartSpec part,
+        double reach) {
+        final CommonMicroClass microClass = classFor(part.id);
+        if (microClass == null) {
+            return "unknown microblock type " + part.id;
+        }
+        final int material = MicroMaterialRegistry$.MODULE$.materialID(part.material);
+        final Vec3 eye = serverEye(player);
+        final Vec3 look = player.getLook(1.0F);
+        final Vec3 end = eye.addVector(look.xCoord * reach, look.yCoord * reach, look.zCoord * reach);
+        final MovingObjectPosition hit = world.getBlock(click.x, click.y, click.z)
+            .collisionRayTrace(world, click.x, click.y, click.z, eye, end);
+        if (hit == null) {
+            return "the look ray misses the clicked block";
+        }
+        final ExecutablePlacement placement = MicroblockPlacement$.MODULE$.apply(
+            player,
+            hit,
+            part.size(),
+            material,
+            !player.capabilities.isCreativeMode,
+            microClass.placementProperties());
+        if (placesExactly(placement, x, y, z, part)) {
+            return null;
+        }
+        final String at = String.format(
+            "hit side %d at %.3f %.3f %.3f",
+            hit.sideHit,
+            hit.hitVec.xCoord,
+            hit.hitVec.yCoord,
+            hit.hitVec.zCoord);
+        if (placement == null) {
+            return at + " places nothing";
+        }
+        final Microblock placed = placement.part();
+        return String.format(
+            "%s places %s shape %d at %d %d %d",
+            at,
+            placed.getType(),
+            placed.shape() & 0xff,
+            placement.pos().x,
+            placement.pos().y,
+            placement.pos().z);
+    }
+
+    @Override
+    public String describeEye(EntityPlayer player) {
+        final Vec3 eye = serverEye(player);
+        return String.format(
+            "eye %.3f %.3f %.3f (client feet %.3f %.3f %.3f, sneaking %s)",
+            eye.xCoord,
+            eye.yCoord,
+            eye.zCoord,
+            player.posX,
+            player.boundingBox.minY,
+            player.posZ,
+            player.isSneaking());
     }
 
     /** Largest r such that every grid point within r steps (Chebyshev) also gives the part. */

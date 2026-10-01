@@ -41,4 +41,15 @@ public class NoMicroblocks implements IMicroblocks {
         double reach) {
         return null;
     }
+
+    @Override
+    public String mismatch(World world, EntityPlayer player, int x, int y, int z, MicroblockClick click, PartSpec part,
+        double reach) {
+        return "microblocks not installed";
+    }
+
+    @Override
+    public String describeEye(EntityPlayer player) {
+        return "";
+    }
 }

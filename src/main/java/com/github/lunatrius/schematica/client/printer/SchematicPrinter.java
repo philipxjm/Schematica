@@ -288,10 +288,32 @@ public class SchematicPrinter {
             this.microblockAttempts.put(key, record);
 
             final float yaw = player.rotationYaw, pitch = player.rotationPitch;
-            player.sendQueue
-                .addToSendQueue(new C03PacketPlayer.C05PacketPlayerLook(click.yaw, click.pitch, player.onGround));
             player.rotationYaw = click.yaw;
             player.rotationPitch = click.pitch;
+            // Self-check: replay the server's ray trace and Forge Multipart placement for this look before clicking.
+            final String mismatch = microblocks.mismatch(world, player, wx, wy, wz, click, part, reach);
+            Reference.logger.info(
+                "Microblock printing: {} at {} {} {}: click {} {} {} side {} at {} yaw {} pitch {}, {}{}",
+                part,
+                wx,
+                wy,
+                wz,
+                click.x,
+                click.y,
+                click.z,
+                click.side,
+                String.format("%.3f %.3f %.3f", click.hit.xCoord, click.hit.yCoord, click.hit.zCoord),
+                click.yaw,
+                click.pitch,
+                microblocks.describeEye(player),
+                mismatch == null ? "" : "; self-check failed, not clicking: " + mismatch);
+            if (mismatch != null) {
+                player.rotationYaw = yaw;
+                player.rotationPitch = pitch;
+                return false;
+            }
+            player.sendQueue
+                .addToSendQueue(new C03PacketPlayer.C05PacketPlayerLook(click.yaw, click.pitch, player.onGround));
             final boolean success = placeBlock(
                 world,
                 player,
