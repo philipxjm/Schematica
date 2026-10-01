@@ -11,6 +11,8 @@ public final class MicroblockClick {
     public final int x, y, z, side;
     public final Vec3 hit;
     public final float yaw, pitch;
+    /** Eye-position error (blocks) the click survives before it lands on another part's region. */
+    public double tolerance;
 
     public MicroblockClick(int x, int y, int z, int side, Vec3 hit, float yaw, float pitch) {
         this.x = x;

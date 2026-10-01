@@ -291,7 +291,7 @@ public class SchematicPrinter {
             final MicroblockClick click = microblocks.planClick(world, player, wx, wy, wz, part, reach);
             if (click == null) {
                 if (this.microblockUnreachableLogged.add(key)) {
-                    MicroblockLog.log("no reachable face places %s at %d %d %d (yet)", part, wx, wy, wz);
+                    MicroblockLog.log("no safe click point for %s at %d %d %d within reach (yet)", part, wx, wy, wz);
                 }
                 continue;
             }
@@ -310,7 +310,7 @@ public class SchematicPrinter {
             // Self-check: replay the server's ray trace and Forge Multipart placement for this look before clicking.
             final String mismatch = microblocks.mismatch(world, player, wx, wy, wz, click, part, reach);
             MicroblockLog.log(
-                "%s at %d %d %d: click %d %d %d side %d at %.3f %.3f %.3f yaw %.2f pitch %.2f, %s%s",
+                "%s at %d %d %d: click %d %d %d side %d at %.3f %.3f %.3f yaw %.2f pitch %.2f, tolerance %.3f, %s%s",
                 part,
                 wx,
                 wy,
@@ -324,6 +324,7 @@ public class SchematicPrinter {
                 click.hit.zCoord,
                 click.yaw,
                 click.pitch,
+                click.tolerance,
                 microblocks.describeEye(player),
                 mismatch == null ? "" : "; SELF-CHECK FAILED, not clicking: " + mismatch);
             if (mismatch != null) {

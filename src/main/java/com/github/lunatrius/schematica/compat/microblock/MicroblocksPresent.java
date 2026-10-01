@@ -51,6 +51,11 @@ public class MicroblocksPresent implements IMicroblocks {
      * space.
      */
     private static final double TOLERANCE_GOOD = 0.1;
+    /**
+     * Least eye-position error a click must survive to be sent at all. Below this (typically the far edge of reach,
+     * where only a region's near corner is in range) wait for the player to come closer.
+     */
+    private static final double TOLERANCE_MIN = 0.05;
 
     @Override
     public boolean isMultipart(Block block) {
@@ -186,11 +191,12 @@ public class MicroblocksPresent implements IMicroblocks {
                     if (bestScore == null || compare(score, bestScore) > 0) {
                         bestScore = score;
                         best = lookAt(eye, cx, cy, cz, side, point);
+                        best.tolerance = tolerance;
                     }
                 }
             }
         }
-        return best;
+        return best != null && best.tolerance >= TOLERANCE_MIN ? best : null;
     }
 
     @Override
@@ -243,13 +249,14 @@ public class MicroblocksPresent implements IMicroblocks {
     public String describeEye(EntityPlayer player) {
         final Vec3 eye = serverEye(player);
         return String.format(
-            "eye %.3f %.3f %.3f (client feet %.3f %.3f %.3f, sneaking %s)",
+            "eye %.3f %.3f %.3f (client feet %.3f %.3f %.3f, sneak flag %s, sneak key %s)",
             eye.xCoord,
             eye.yCoord,
             eye.zCoord,
             player.posX,
             player.boundingBox.minY,
             player.posZ,
+            sneakFlag(player),
             player.isSneaking());
     }
 
@@ -321,12 +328,21 @@ public class MicroblocksPresent implements IMicroblocks {
      * server last received from this client (oldPos*, sent each tick), not where the client has moved since.
      */
     private static Vec3 serverEye(EntityPlayer player) {
-        final double sneak = player.isSneaking() ? 0.08 : 0;
+        final double sneak = sneakFlag(player) ? 0.08 : 0;
         if (player instanceof EntityClientPlayerMP) {
             final EntityClientPlayerMP client = (EntityClientPlayerMP) player;
             return Vec3.createVectorHelper(client.oldPosX, client.oldMinY + 1.62 - sneak, client.oldPosZ);
         }
         return Vec3.createVectorHelper(player.posX, player.boundingBox.minY + 1.62 - sneak, player.posZ);
+    }
+
+    /**
+     * Sneaking as the server sees it: the entity flag the printer sets and sends (C0B), not EntityPlayerSP.isSneaking,
+     * which reports the sneak key and so says false while the printer sneaks.
+     */
+    private static boolean sneakFlag(EntityPlayer player) {
+        return (player.getDataWatcher()
+            .getWatchableObjectByte(0) & 1 << 1) != 0;
     }
 
     /** A plain full-cube block: its face is where the server's ray trace will land. */
