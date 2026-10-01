@@ -3,4 +3,7 @@
 dependencies {
 	implementation('com.github.GTNewHorizons:LunatriusCore:1.2.1-GTNH:dev')
     compileOnly rfg.deobf('curse.maven:lotr-423748:4091561')
+    // Optional: microblock printing (compat.microblock), only loaded when Forge Microblocks is installed.
+    compileOnly('com.github.GTNewHorizons:ForgeMultipart:1.7.12:dev') { transitive = false }
+    compileOnly('com.github.GTNewHorizons:CodeChickenCore:1.4.17:dev') { transitive = false }
 }

@@ -12,6 +12,9 @@ import net.minecraft.util.MovingObjectPosition;
 
 import com.github.lunatrius.core.entity.EntityHelper;
 import com.github.lunatrius.schematica.client.world.SchematicWorld;
+import com.github.lunatrius.schematica.compat.microblock.IMicroblocks;
+import com.github.lunatrius.schematica.compat.microblock.PartSpec;
+import com.github.lunatrius.schematica.proxy.ClientProxy;
 import com.github.lunatrius.schematica.reference.Reference;
 
 public class BlockList {
@@ -42,6 +45,24 @@ public class BlockList {
                     final int wx = world.position.x + x;
                     final int wy = world.position.y + y;
                     final int wz = world.position.z + z;
+
+                    // Microblocks: one entry per part item (strip, cover...), told apart by material NBT.
+                    final IMicroblocks microblocks = ClientProxy.microblocks;
+                    if (microblocks.isMultipart(block)) {
+                        for (PartSpec part : microblocks.partsOf(world.getTileEntity(x, y, z))) {
+                            final ItemStack partStack = microblocks.itemFor(part);
+                            if (partStack == null) {
+                                continue;
+                            }
+                            final WrappedItemStack wrapped = findOrCreateWrappedItemStackFor(blockList, partStack);
+                            if (microblocks.isPlaced(mcWorld, wx, wy, wz, part)) {
+                                wrapped.placed++;
+                            }
+                            wrapped.total++;
+                        }
+                        continue;
+                    }
+
                     final Block mcBlock = mcWorld.getBlock(wx, wy, wz);
                     final boolean isPlaced = block == mcBlock
                         && world.getBlockMetadata(x, y, z) == mcWorld.getBlockMetadata(wx, wy, wz);
@@ -70,6 +91,8 @@ public class BlockList {
 
         for (WrappedItemStack wrappedItemStack : blockList) {
             if (player.capabilities.isCreativeMode) wrappedItemStack.inventory = -1;
+            else if (wrappedItemStack.itemStack.hasTagCompound())
+                wrappedItemStack.inventory = countWithTag(player, wrappedItemStack.itemStack);
             else wrappedItemStack.inventory = EntityHelper.getItemCountInInventory(
                 player.inventory,
                 wrappedItemStack.itemStack.getItem(),
@@ -79,10 +102,22 @@ public class BlockList {
         return blockList;
     }
 
+    /** Inventory count of items equal to the stack including NBT (microblocks differ only by material tag). */
+    private static int countWithTag(final EntityPlayer player, final ItemStack itemStack) {
+        int count = 0;
+        for (final ItemStack stack : player.inventory.mainInventory) {
+            if (stack != null && stack.isItemEqual(itemStack) && ItemStack.areItemStackTagsEqual(stack, itemStack)) {
+                count += stack.stackSize;
+            }
+        }
+        return count;
+    }
+
     private WrappedItemStack findOrCreateWrappedItemStackFor(final List<WrappedItemStack> blockList,
         final ItemStack itemStack) {
         for (final WrappedItemStack wrappedItemStack : blockList) {
-            if (wrappedItemStack.itemStack.isItemEqual(itemStack)) {
+            if (wrappedItemStack.itemStack.isItemEqual(itemStack) && (!itemStack.hasTagCompound()
+                || ItemStack.areItemStackTagsEqual(wrappedItemStack.itemStack, itemStack))) {
                 return wrappedItemStack;
             }
         }

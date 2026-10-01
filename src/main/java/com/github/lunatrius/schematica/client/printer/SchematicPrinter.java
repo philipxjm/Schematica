@@ -13,6 +13,7 @@ import net.minecraft.entity.player.InventoryPlayer;
 import net.minecraft.init.Items;
 import net.minecraft.item.ItemBucket;
 import net.minecraft.item.ItemStack;
+import net.minecraft.network.play.client.C03PacketPlayer;
 import net.minecraft.network.play.client.C0BPacketEntityAction;
 import net.minecraft.util.Vec3;
 import net.minecraft.world.World;
@@ -27,6 +28,9 @@ import com.github.lunatrius.schematica.client.printer.registry.PlacementData;
 import com.github.lunatrius.schematica.client.printer.registry.PlacementRegistry;
 import com.github.lunatrius.schematica.client.util.BlockToItemStack;
 import com.github.lunatrius.schematica.client.world.SchematicWorld;
+import com.github.lunatrius.schematica.compat.microblock.IMicroblocks;
+import com.github.lunatrius.schematica.compat.microblock.MicroblockClick;
+import com.github.lunatrius.schematica.compat.microblock.PartSpec;
 import com.github.lunatrius.schematica.handler.ConfigurationHandler;
 import com.github.lunatrius.schematica.proxy.ClientProxy;
 import com.github.lunatrius.schematica.reference.Constants;
@@ -151,6 +155,10 @@ public class SchematicPrinter {
         final int metadata = this.schematic.getBlockMetadata(x, y, z);
         final int realMetadata = world.getBlockMetadata(wx, wy, wz);
 
+        if (ClientProxy.microblocks.isMultipart(block)) {
+            return placeMicroblock(world, (EntityClientPlayerMP) player, x, y, z, wx, wy, wz, realBlock);
+        }
+
         if (block == realBlock && metadata == realMetadata) {
             return false;
         }
@@ -186,6 +194,67 @@ public class SchematicPrinter {
             }
         }
 
+        return false;
+    }
+
+    /**
+     * Places one missing microblock (Forge Multipart strip, cover, corner...) of the schematic's multipart block at
+     * (x, y, z). Forge Multipart chooses the part's slot from where the player's look ray meets the clicked face, so
+     * this turns the player to look at a point on a neighbouring block's face, clicks it, and turns back.
+     */
+    private boolean placeMicroblock(World world, EntityClientPlayerMP player, int x, int y, int z, int wx, int wy,
+        int wz, Block realBlock) {
+        final IMicroblocks microblocks = ClientProxy.microblocks;
+        if (!microblocks.isMultipart(realBlock) && !realBlock.isReplaceable(world, wx, wy, wz)) {
+            return false;
+        }
+
+        final double reach = this.minecraft.playerController.getBlockReachDistance();
+        for (PartSpec part : microblocks.partsOf(this.schematic.getTileEntity(x, y, z))) {
+            if (microblocks.isPlaced(world, wx, wy, wz, part)) {
+                continue;
+            }
+            final ItemStack itemStack = microblocks.itemFor(part);
+            if (itemStack == null || (!this.minecraft.playerController.isInCreativeMode()
+                && getInventorySlotWithItem(player.inventory, itemStack, true) < 0)) {
+                continue;
+            }
+            final MicroblockClick click = microblocks.planClick(world, player, wx, wy, wz, part, reach);
+            if (click == null) {
+                Reference.logger.debug("No reachable face places {} at {} {} {}", part, wx, wy, wz);
+                continue;
+            }
+            this.timeout[x][y][z] = (byte) ConfigurationHandler.timeout;
+            if (!swapToItem(player.inventory, itemStack, true, true)) {
+                return false;
+            }
+
+            final float yaw = player.rotationYaw, pitch = player.rotationPitch;
+            player.sendQueue
+                .addToSendQueue(new C03PacketPlayer.C05PacketPlayerLook(click.yaw, click.pitch, player.onGround));
+            player.rotationYaw = click.yaw;
+            player.rotationPitch = click.pitch;
+            final boolean success = placeBlock(
+                world,
+                player,
+                player.getCurrentEquippedItem(),
+                click.x,
+                click.y,
+                click.z,
+                click.side,
+                click.hit);
+            player.rotationYaw = yaw;
+            player.rotationPitch = pitch;
+            player.sendQueue.addToSendQueue(new C03PacketPlayer.C05PacketPlayerLook(yaw, pitch, player.onGround));
+
+            final ItemStack held = player.getCurrentEquippedItem();
+            if (held != null && held.stackSize == 0) {
+                player.inventory.mainInventory[player.inventory.currentItem] = null;
+            }
+            return success && !ConfigurationHandler.placeInstantly;
+        }
+        // Nothing placeable here right now (no item, or no reachable face); try again after the timeout.
+        this.timeout[x][y][z] = (byte) ConfigurationHandler.timeout;
         return false;
     }
 
@@ -370,11 +439,12 @@ public class SchematicPrinter {
     }
 
     private boolean swapToItem(InventoryPlayer inventory, ItemStack itemStack) {
-        return swapToItem(inventory, itemStack, true);
+        return swapToItem(inventory, itemStack, true, false);
     }
 
-    private boolean swapToItem(InventoryPlayer inventory, ItemStack itemStack, boolean swapSlots) {
-        int slot = getInventorySlotWithItem(inventory, itemStack);
+    /** matchNbt: the item's NBT must match too (microblock items differ only by their "mat" tag). */
+    private boolean swapToItem(InventoryPlayer inventory, ItemStack itemStack, boolean swapSlots, boolean matchNbt) {
+        int slot = getInventorySlotWithItem(inventory, itemStack, matchNbt);
 
         if (this.minecraft.playerController.isInCreativeMode()
             && (slot < Constants.Inventory.InventoryOffset.HOTBAR
@@ -395,15 +465,17 @@ public class SchematicPrinter {
         } else if (swapSlots && slot >= Constants.Inventory.InventoryOffset.INVENTORY
             && slot < Constants.Inventory.InventoryOffset.INVENTORY + Constants.Inventory.Size.INVENTORY) {
                 if (swapSlots(inventory, slot)) {
-                    return swapToItem(inventory, itemStack, false);
+                    return swapToItem(inventory, itemStack, false, matchNbt);
                 }
             }
         return false;
     }
 
-    private int getInventorySlotWithItem(final InventoryPlayer inventory, final ItemStack itemStack) {
+    private int getInventorySlotWithItem(final InventoryPlayer inventory, final ItemStack itemStack,
+        final boolean matchNbt) {
         for (int i = 0; i < inventory.mainInventory.length; i++) {
-            if (inventory.mainInventory[i] != null && inventory.mainInventory[i].isItemEqual(itemStack)) {
+            if (inventory.mainInventory[i] != null && inventory.mainInventory[i].isItemEqual(itemStack)
+                && (!matchNbt || ItemStack.areItemStackTagsEqual(inventory.mainInventory[i], itemStack))) {
                 return i;
             }
         }

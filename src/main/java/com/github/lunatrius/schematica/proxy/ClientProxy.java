@@ -29,6 +29,8 @@ import com.github.lunatrius.schematica.client.renderer.RendererSchematicGlobal;
 import com.github.lunatrius.schematica.client.world.SchematicWorld;
 import com.github.lunatrius.schematica.compat.ILOTRPresent;
 import com.github.lunatrius.schematica.compat.NoLOTRProxy;
+import com.github.lunatrius.schematica.compat.microblock.IMicroblocks;
+import com.github.lunatrius.schematica.compat.microblock.NoMicroblocks;
 import com.github.lunatrius.schematica.handler.ConfigurationHandler;
 import com.github.lunatrius.schematica.handler.client.ChatEventHandler;
 import com.github.lunatrius.schematica.handler.client.InputHandler;
@@ -68,6 +70,7 @@ public class ClientProxy extends CommonProxy {
     public static MovingObjectPosition movingObjectPosition = null;
     private final SchematicWorld schematicWorld = null;
     public static ILOTRPresent lotrProxy = null;
+    public static IMicroblocks microblocks = new NoMicroblocks();
     private static final Gson gson = new GsonBuilder().setPrettyPrinting()
         .create();
     private static final Type schematicDataType = new TypeToken<Map<String, Map<String, SchematicData>>>() {}.getType();
@@ -355,6 +358,18 @@ public class ClientProxy extends CommonProxy {
         } catch (Exception e) {
             Reference.logger.warn("Failed to create lotr proxy in the normal way");
             lotrProxy = new NoLOTRProxy();
+        }
+        try {
+            if (Loader.isModLoaded("ForgeMicroblock")) {
+                Reference.logger.info("Forge Microblocks detected, enabling microblock printing");
+                microblocks = Class.forName(Reference.MICROBLOCKS_PROXY)
+                    .asSubclass(IMicroblocks.class)
+                    .getDeclaredConstructor()
+                    .newInstance();
+            }
+        } catch (Throwable e) {
+            Reference.logger.warn("Failed to enable microblock support", e);
+            microblocks = new NoMicroblocks();
         }
     }
 
