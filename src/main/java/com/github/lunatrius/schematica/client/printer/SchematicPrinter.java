@@ -2,8 +2,10 @@ package com.github.lunatrius.schematica.client.printer;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockLiquid;
@@ -32,6 +34,7 @@ import com.github.lunatrius.schematica.client.util.BlockToItemStack;
 import com.github.lunatrius.schematica.client.world.SchematicWorld;
 import com.github.lunatrius.schematica.compat.microblock.IMicroblocks;
 import com.github.lunatrius.schematica.compat.microblock.MicroblockClick;
+import com.github.lunatrius.schematica.compat.microblock.MicroblockLog;
 import com.github.lunatrius.schematica.compat.microblock.PartSpec;
 import com.github.lunatrius.schematica.handler.ConfigurationHandler;
 import com.github.lunatrius.schematica.proxy.ClientProxy;
@@ -55,6 +58,8 @@ public class SchematicPrinter {
     private byte[][][] timeout = null;
     /** Microblock clicks so far, by "x,y,z part": what the block held when we clicked, and how often we tried. */
     private final Map<String, MicroblockAttempt> microblockAttempts = new HashMap<>();
+    /** Parts already logged as having no reachable face, so the log gets one line each, not one per tick. */
+    private final Set<String> microblockUnreachableLogged = new HashSet<>();
 
     private static final class MicroblockAttempt {
 
@@ -99,6 +104,7 @@ public class SchematicPrinter {
 
     public void refresh() {
         this.microblockAttempts.clear();
+        this.microblockUnreachableLogged.clear();
         if (this.schematic != null) {
             this.timeout = new byte[this.schematic.getWidth()][this.schematic.getHeight()][this.schematic.getLength()];
         } else {
@@ -253,8 +259,8 @@ public class SchematicPrinter {
                 for (PartSpec now : placed) {
                     if (!attempt.before.contains(now) && !wanted.contains(now)) {
                         attempt.gaveUp = true;
-                        Reference.logger.warn(
-                            "Microblock printing: placed {} instead of {} at {} {} {}; skipping it, place it by hand",
+                        MicroblockLog.log(
+                            "MISPLACED %s instead of %s at %d %d %d; skipping it, place it by hand",
                             now,
                             part,
                             wx,
@@ -262,6 +268,15 @@ public class SchematicPrinter {
                             wz);
                         break;
                     }
+                }
+                if (!attempt.gaveUp && attempt.tries >= MICROBLOCK_TRIES) {
+                    MicroblockLog.log(
+                        "GAVE UP on %s at %d %d %d after %d clicks placed nothing",
+                        part,
+                        wx,
+                        wy,
+                        wz,
+                        attempt.tries);
                 }
                 if (attempt.gaveUp || attempt.tries >= MICROBLOCK_TRIES) {
                     attempt.gaveUp = true;
@@ -275,7 +290,9 @@ public class SchematicPrinter {
             }
             final MicroblockClick click = microblocks.planClick(world, player, wx, wy, wz, part, reach);
             if (click == null) {
-                Reference.logger.debug("No reachable face places {} at {} {} {}", part, wx, wy, wz);
+                if (this.microblockUnreachableLogged.add(key)) {
+                    MicroblockLog.log("no reachable face places %s at %d %d %d (yet)", part, wx, wy, wz);
+                }
                 continue;
             }
             this.timeout[x][y][z] = (byte) ConfigurationHandler.timeout;
@@ -292,8 +309,8 @@ public class SchematicPrinter {
             player.rotationPitch = click.pitch;
             // Self-check: replay the server's ray trace and Forge Multipart placement for this look before clicking.
             final String mismatch = microblocks.mismatch(world, player, wx, wy, wz, click, part, reach);
-            Reference.logger.info(
-                "Microblock printing: {} at {} {} {}: click {} {} {} side {} at {} yaw {} pitch {}, {}{}",
+            MicroblockLog.log(
+                "%s at %d %d %d: click %d %d %d side %d at %.3f %.3f %.3f yaw %.2f pitch %.2f, %s%s",
                 part,
                 wx,
                 wy,
@@ -302,11 +319,13 @@ public class SchematicPrinter {
                 click.y,
                 click.z,
                 click.side,
-                String.format("%.3f %.3f %.3f", click.hit.xCoord, click.hit.yCoord, click.hit.zCoord),
+                click.hit.xCoord,
+                click.hit.yCoord,
+                click.hit.zCoord,
                 click.yaw,
                 click.pitch,
                 microblocks.describeEye(player),
-                mismatch == null ? "" : "; self-check failed, not clicking: " + mismatch);
+                mismatch == null ? "" : "; SELF-CHECK FAILED, not clicking: " + mismatch);
             if (mismatch != null) {
                 player.rotationYaw = yaw;
                 player.rotationPitch = pitch;
