@@ -2,7 +2,9 @@ package com.github.lunatrius.schematica.compat.microblock;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import net.minecraft.block.Block;
 import net.minecraft.client.entity.EntityClientPlayerMP;
@@ -133,49 +135,40 @@ public class MicroblocksPresent implements IMicroblocks {
     @Override
     public MicroblockClick planClick(World world, EntityPlayer player, int x, int y, int z, PartSpec part,
         double reach) {
-        final CommonMicroClass microClass = classFor(part.id);
-        if (microClass == null) {
+        final FaceMasks masks = masks(world, player, x, y, z, part);
+        if (masks == null) {
             return null;
         }
-        final int material = MicroMaterialRegistry$.MODULE$.materialID(part.material);
-        if (material == MicroMaterialRegistry$.MODULE$.getMissingId()) {
-            return null;
-        }
-        final PlacementProperties properties = microClass.placementProperties();
-        final boolean checkMaterial = !player.capabilities.isCreativeMode;
         final Vec3 eye = serverEye(player);
 
         MicroblockClick best = null;
         double[] bestScore = null;
 
         for (ForgeDirection direction : ForgeDirection.VALID_DIRECTIONS) {
-            // Click the face of the neighbour that points at the target space: a full block's face, or, with no
-            // block there, the face of the empty space (the server ray-traces it as a full cube all the same).
-            final int cx = x - direction.offsetX, cy = y - direction.offsetY, cz = z - direction.offsetZ;
             final int side = direction.ordinal();
-            final boolean solid = isFullBlock(world, cx, cy, cz);
-            if (!solid && !world.isAirBlock(cx, cy, cz) || !facesEye(eye, cx, cy, cz, direction)) {
+            final boolean[][] mask = masks.ok[side];
+            final int cx = x - direction.offsetX, cy = y - direction.offsetY, cz = z - direction.offsetZ;
+            if (mask == null || !facesEye(eye, cx, cy, cz, direction)) {
                 continue;
             }
 
             final boolean[][] ok = new boolean[GRID + 1][GRID + 1];
+            boolean any = false;
             for (int i = 1; i < GRID; i++) {
                 for (int j = 1; j < GRID; j++) {
-                    final Vec3 point = facePoint(cx, cy, cz, direction, i / (double) GRID, j / (double) GRID);
-                    if (eye.distanceTo(point) > reach) {
-                        continue;
+                    if (mask[i][j]
+                        && eye.distanceTo(facePoint(cx, cy, cz, direction, i / (double) GRID, j / (double) GRID))
+                            <= reach) {
+                        ok[i][j] = true;
+                        any = true;
                     }
-                    final MovingObjectPosition hit = new MovingObjectPosition(cx, cy, cz, side, point);
-                    ok[i][j] = placesExactly(
-                        MicroblockPlacement$.MODULE$
-                            .apply(player, hit, part.size(), material, checkMaterial, properties),
-                        x,
-                        y,
-                        z,
-                        part);
                 }
             }
+            if (!any) {
+                continue;
+            }
 
+            final int[][] clearance = clearance(ok);
             for (int i = 1; i < GRID; i++) {
                 for (int j = 1; j < GRID; j++) {
                     if (!ok[i][j]) {
@@ -184,10 +177,10 @@ public class MicroblocksPresent implements IMicroblocks {
                     // Aim where the click survives the most error in our idea of the server's eye position:
                     // deep inside the region that gives the part, and square-on, since a ray that skims the face
                     // moves its hit point far for a small change in eye height.
-                    final int clearance = clearance(ok, i, j);
                     final Vec3 point = facePoint(cx, cy, cz, direction, i / (double) GRID, j / (double) GRID);
-                    final double tolerance = (clearance + 0.5) / GRID * steepness(eye, point, direction);
-                    final double[] score = { Math.min(tolerance, TOLERANCE_GOOD), solid ? 1 : 0, tolerance };
+                    final double tolerance = (clearance[i][j] + 0.5) / GRID * steepness(eye, point, direction);
+                    final double[] score = { Math.min(tolerance, TOLERANCE_GOOD), masks.solid[side] ? 1 : 0,
+                        tolerance };
                     if (bestScore == null || compare(score, bestScore) > 0) {
                         bestScore = score;
                         best = lookAt(eye, cx, cy, cz, side, point);
@@ -197,6 +190,92 @@ public class MicroblocksPresent implements IMicroblocks {
             }
         }
         return best != null && best.tolerance >= TOLERANCE_MIN ? best : null;
+    }
+
+    /**
+     * For each face around the target, which grid points Forge Multipart turns into exactly this part (null for a
+     * face that cannot be clicked). Independent of where the player stands, so it is cached until the target's
+     * parts or the neighbouring blocks change; only reach and aim are worked out per tick.
+     */
+    private static final class FaceMasks {
+
+        final boolean[][][] ok = new boolean[6][][];
+        final boolean[] solid = new boolean[6];
+    }
+
+    private static final int MASK_CACHE_SIZE = 2048;
+    private final Map<String, FaceMasks> maskCache = new LinkedHashMap<String, FaceMasks>(256, 0.75f, true) {
+
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, FaceMasks> eldest) {
+            return size() > MASK_CACHE_SIZE;
+        }
+    };
+
+    private FaceMasks masks(World world, EntityPlayer player, int x, int y, int z, PartSpec part) {
+        final CommonMicroClass microClass = classFor(part.id);
+        if (microClass == null) {
+            return null;
+        }
+        final int material = MicroMaterialRegistry$.MODULE$.materialID(part.material);
+        if (material == MicroMaterialRegistry$.MODULE$.getMissingId()) {
+            return null;
+        }
+        final boolean checkMaterial = !player.capabilities.isCreativeMode;
+
+        final StringBuilder key = new StringBuilder();
+        key.append(x)
+            .append(',')
+            .append(y)
+            .append(',')
+            .append(z)
+            .append(' ')
+            .append(part)
+            .append(checkMaterial ? " s" : " c")
+            .append(placedParts(world, x, y, z));
+        for (ForgeDirection direction : ForgeDirection.VALID_DIRECTIONS) {
+            final int cx = x - direction.offsetX, cy = y - direction.offsetY, cz = z - direction.offsetZ;
+            key.append(' ')
+                .append(Block.getIdFromBlock(world.getBlock(cx, cy, cz)))
+                .append(':')
+                .append(world.getBlockMetadata(cx, cy, cz));
+        }
+        final String cacheKey = key.toString();
+        FaceMasks masks = this.maskCache.get(cacheKey);
+        if (masks != null) {
+            return masks;
+        }
+
+        masks = new FaceMasks();
+        final PlacementProperties properties = microClass.placementProperties();
+        for (ForgeDirection direction : ForgeDirection.VALID_DIRECTIONS) {
+            // Click the face of the neighbour that points at the target space: a full block's face, or, with no
+            // block there, the face of the empty space (the server ray-traces it as a full cube all the same).
+            final int cx = x - direction.offsetX, cy = y - direction.offsetY, cz = z - direction.offsetZ;
+            final int side = direction.ordinal();
+            final boolean solid = isFullBlock(world, cx, cy, cz);
+            if (!solid && !world.isAirBlock(cx, cy, cz)) {
+                continue;
+            }
+            final boolean[][] mask = new boolean[GRID + 1][GRID + 1];
+            for (int i = 1; i < GRID; i++) {
+                for (int j = 1; j < GRID; j++) {
+                    final Vec3 point = facePoint(cx, cy, cz, direction, i / (double) GRID, j / (double) GRID);
+                    final MovingObjectPosition hit = new MovingObjectPosition(cx, cy, cz, side, point);
+                    mask[i][j] = placesExactly(
+                        MicroblockPlacement$.MODULE$
+                            .apply(player, hit, part.size(), material, checkMaterial, properties),
+                        x,
+                        y,
+                        z,
+                        part);
+                }
+            }
+            masks.ok[side] = mask;
+            masks.solid[side] = solid;
+        }
+        this.maskCache.put(cacheKey, masks);
+        return masks;
     }
 
     @Override
@@ -260,22 +339,50 @@ public class MicroblocksPresent implements IMicroblocks {
             player.isSneaking());
     }
 
-    /** Largest r such that every grid point within r steps (Chebyshev) also gives the part. */
-    private static int clearance(boolean[][] ok, int i, int j) {
-        for (int r = 1; r <= GRID; r++) {
-            for (int di = -r; di <= r; di++) {
-                for (int dj = -r; dj <= r; dj++) {
-                    if (Math.max(Math.abs(di), Math.abs(dj)) != r) {
-                        continue;
-                    }
-                    final int a = i + di, b = j + dj;
-                    if (a < 0 || a > GRID || b < 0 || b > GRID || !ok[a][b]) {
-                        return r - 1;
-                    }
+    /**
+     * Per grid point, the largest r such that every point within r steps (Chebyshev) is also ok: a two-pass
+     * chessboard distance transform to the nearest not-ok point (the grid border counts as not ok), minus one.
+     */
+    private static int[][] clearance(boolean[][] ok) {
+        final int n = GRID + 1, far = 4 * n;
+        final int[][] d = new int[n][n];
+        for (int i = 0; i < n; i++) {
+            for (int j = 0; j < n; j++) {
+                if (!ok[i][j]) {
+                    d[i][j] = 0;
+                    continue;
                 }
+                int v = far;
+                if (i > 0) {
+                    v = Math.min(v, d[i - 1][j] + 1);
+                    if (j > 0) v = Math.min(v, d[i - 1][j - 1] + 1);
+                    if (j < n - 1) v = Math.min(v, d[i - 1][j + 1] + 1);
+                }
+                if (j > 0) v = Math.min(v, d[i][j - 1] + 1);
+                d[i][j] = v;
             }
         }
-        return GRID;
+        for (int i = n - 1; i >= 0; i--) {
+            for (int j = n - 1; j >= 0; j--) {
+                if (!ok[i][j]) {
+                    continue;
+                }
+                int v = d[i][j];
+                if (i < n - 1) {
+                    v = Math.min(v, d[i + 1][j] + 1);
+                    if (j > 0) v = Math.min(v, d[i + 1][j - 1] + 1);
+                    if (j < n - 1) v = Math.min(v, d[i + 1][j + 1] + 1);
+                }
+                if (j < n - 1) v = Math.min(v, d[i][j + 1] + 1);
+                d[i][j] = v;
+            }
+        }
+        for (int i = 0; i < n; i++) {
+            for (int j = 0; j < n; j++) {
+                d[i][j] = Math.max(0, d[i][j] - 1);
+            }
+        }
+        return d;
     }
 
     /** How square-on the look ray meets the face (1 = perpendicular); off-angle rays amplify aim errors. */

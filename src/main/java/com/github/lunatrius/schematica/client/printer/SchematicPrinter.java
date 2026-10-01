@@ -330,7 +330,7 @@ public class SchematicPrinter {
             if (mismatch != null) {
                 player.rotationYaw = yaw;
                 player.rotationPitch = pitch;
-                return false;
+                continue;
             }
             player.sendQueue
                 .addToSendQueue(new C03PacketPlayer.C05PacketPlayerLook(click.yaw, click.pitch, player.onGround));
@@ -351,9 +351,12 @@ public class SchematicPrinter {
             if (held != null && held.stackSize == 0) {
                 player.inventory.mainInventory[player.inventory.currentItem] = null;
             }
-            return success && !ConfigurationHandler.placeInstantly;
+            if (!ConfigurationHandler.placeInstantly) {
+                return success;
+            }
+            // Place Instantly: go on with this space's other missing parts in the same pass.
         }
-        // Nothing placeable here right now (no item, or no reachable face); try again after the timeout.
+        // Done with this space for now (placed what we could; the rest has no item or no safe click yet).
         this.timeout[x][y][z] = (byte) ConfigurationHandler.timeout;
         return false;
     }
