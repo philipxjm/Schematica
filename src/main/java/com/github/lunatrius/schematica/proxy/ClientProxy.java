@@ -29,6 +29,8 @@ import com.github.lunatrius.schematica.client.renderer.RendererSchematicGlobal;
 import com.github.lunatrius.schematica.client.world.SchematicWorld;
 import com.github.lunatrius.schematica.compat.ILOTRPresent;
 import com.github.lunatrius.schematica.compat.NoLOTRProxy;
+import com.github.lunatrius.schematica.compat.architecture.IArchitecture;
+import com.github.lunatrius.schematica.compat.architecture.NoArchitecture;
 import com.github.lunatrius.schematica.compat.microblock.IMicroblocks;
 import com.github.lunatrius.schematica.compat.microblock.NoMicroblocks;
 import com.github.lunatrius.schematica.handler.ConfigurationHandler;
@@ -71,6 +73,7 @@ public class ClientProxy extends CommonProxy {
     private final SchematicWorld schematicWorld = null;
     public static ILOTRPresent lotrProxy = null;
     public static IMicroblocks microblocks = new NoMicroblocks();
+    public static IArchitecture architecture = new NoArchitecture();
     private static final Gson gson = new GsonBuilder().setPrettyPrinting()
         .create();
     private static final Type schematicDataType = new TypeToken<Map<String, Map<String, SchematicData>>>() {}.getType();
@@ -370,6 +373,18 @@ public class ClientProxy extends CommonProxy {
         } catch (Throwable e) {
             Reference.logger.warn("Failed to enable microblock support", e);
             microblocks = new NoMicroblocks();
+        }
+        try {
+            if (Loader.isModLoaded("ArchitectureCraft")) {
+                Reference.logger.info("ArchitectureCraft detected, enabling shape printing");
+                architecture = Class.forName(Reference.ARCHITECTURE_PROXY)
+                    .asSubclass(IArchitecture.class)
+                    .getDeclaredConstructor()
+                    .newInstance();
+            }
+        } catch (Throwable e) {
+            Reference.logger.warn("Failed to enable ArchitectureCraft support", e);
+            architecture = new NoArchitecture();
         }
     }
 

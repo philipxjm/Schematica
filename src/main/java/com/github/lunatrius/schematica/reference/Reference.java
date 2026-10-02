@@ -13,6 +13,7 @@ public class Reference {
     public static final String PROXY_CLIENT = "com.github.lunatrius.schematica.proxy.ClientProxy";
     public static final String LOTR_PROXY = "com.github.lunatrius.schematica.compat.LOTRProxy";
     public static final String MICROBLOCKS_PROXY = "com.github.lunatrius.schematica.compat.microblock.MicroblocksPresent";
+    public static final String ARCHITECTURE_PROXY = "com.github.lunatrius.schematica.compat.architecture.ArchitecturePresent";
     public static final String GUI_FACTORY = "com.github.lunatrius.schematica.client.gui.GuiFactory";
 
     public static Logger logger = LogManager.getLogger(Reference.MODID);

@@ -12,6 +12,8 @@ import net.minecraft.util.MovingObjectPosition;
 
 import com.github.lunatrius.core.entity.EntityHelper;
 import com.github.lunatrius.schematica.client.world.SchematicWorld;
+import com.github.lunatrius.schematica.compat.architecture.IArchitecture;
+import com.github.lunatrius.schematica.compat.architecture.ShapeSpec;
 import com.github.lunatrius.schematica.compat.microblock.IMicroblocks;
 import com.github.lunatrius.schematica.compat.microblock.PartSpec;
 import com.github.lunatrius.schematica.proxy.ClientProxy;
@@ -45,6 +47,35 @@ public class BlockList {
                     final int wx = world.position.x + x;
                     final int wy = world.position.y + y;
                     final int wz = world.position.z + z;
+
+                    // ArchitectureCraft shapes: one entry per shape item (shape, material, glow), placed only when the
+                    // tile entity matches; a second material (window glass, cladding) is an entry of its own.
+                    final IArchitecture architecture = ClientProxy.architecture;
+                    if (architecture.isShape(block)) {
+                        final ShapeSpec want = architecture.specOf(block, world.getTileEntity(x, y, z));
+                        if (want != null) {
+                            final Block mcBlock = mcWorld.getBlock(wx, wy, wz);
+                            final ShapeSpec have = mcBlock == block
+                                ? architecture.specOf(mcBlock, mcWorld.getTileEntity(wx, wy, wz))
+                                : null;
+                            final WrappedItemStack shape = findOrCreateWrappedItemStackFor(
+                                blockList,
+                                architecture.itemFor(want));
+                            if (want.equals(have)) {
+                                shape.placed++;
+                            }
+                            shape.total++;
+                            final ItemStack secondary = architecture.secondaryItemFor(want);
+                            if (secondary != null) {
+                                final WrappedItemStack second = findOrCreateWrappedItemStackFor(blockList, secondary);
+                                if (have != null && have.sameItem(want) && have.sameSecondary(want)) {
+                                    second.placed++;
+                                }
+                                second.total++;
+                            }
+                            continue;
+                        }
+                    }
 
                     // Microblocks: one entry per part item (strip, cover...), told apart by material NBT.
                     final IMicroblocks microblocks = ClientProxy.microblocks;

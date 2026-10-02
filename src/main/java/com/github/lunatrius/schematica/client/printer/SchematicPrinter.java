@@ -32,6 +32,10 @@ import com.github.lunatrius.schematica.client.printer.registry.PlacementData;
 import com.github.lunatrius.schematica.client.printer.registry.PlacementRegistry;
 import com.github.lunatrius.schematica.client.util.BlockToItemStack;
 import com.github.lunatrius.schematica.client.world.SchematicWorld;
+import com.github.lunatrius.schematica.compat.architecture.ArchitectureLog;
+import com.github.lunatrius.schematica.compat.architecture.IArchitecture;
+import com.github.lunatrius.schematica.compat.architecture.ShapeAction;
+import com.github.lunatrius.schematica.compat.architecture.ShapeSpec;
 import com.github.lunatrius.schematica.compat.microblock.IMicroblocks;
 import com.github.lunatrius.schematica.compat.microblock.MicroblockClick;
 import com.github.lunatrius.schematica.compat.microblock.MicroblockLog;
@@ -76,6 +80,24 @@ public class SchematicPrinter {
     /** Clicks per microblock before giving up when nothing at all gets placed (out of reach, lag...). */
     private static final int MICROBLOCK_TRIES = 3;
 
+    /** ArchitectureCraft shapes so far, by world "x,y,z": clicks made, when, and what was last logged. */
+    private final Map<String, ShapeAttempt> shapeAttempts = new HashMap<>();
+
+    private static final class ShapeAttempt {
+
+        int places, fixUps;
+        long lastTick = Long.MIN_VALUE / 2;
+        String lastLogged;
+        boolean gaveUp;
+    }
+
+    /** Placement clicks per shape before giving up (nothing placed: out of reach, lag, no room...). */
+    private static final int SHAPE_PLACES = 3;
+    /** Hammer, chisel and second-material clicks per shape before giving up. */
+    private static final int SHAPE_FIX_UPS = 16;
+    /** Ticks to wait after a click on a shape for the server's tile entity to arrive before judging it again. */
+    private static final int SHAPE_SETTLE_TICKS = 10;
+
     public boolean isEnabled() {
         return this.isEnabled;
     }
@@ -111,6 +133,7 @@ public class SchematicPrinter {
         this.microblockAttempts.clear();
         this.microblockClickedSpaces.clear();
         this.microblockUnreachableLogged.clear();
+        this.shapeAttempts.clear();
         if (this.schematic != null) {
             this.timeout = new byte[this.schematic.getWidth()][this.schematic.getHeight()][this.schematic.getLength()];
         } else {
@@ -196,6 +219,10 @@ public class SchematicPrinter {
 
         if (ClientProxy.microblocks.isMultipart(block)) {
             return placeMicroblock(world, (EntityClientPlayerMP) player, x, y, z, wx, wy, wz, realBlock);
+        }
+
+        if (ClientProxy.architecture.isShape(block)) {
+            return placeShape(world, (EntityClientPlayerMP) player, x, y, z, wx, wy, wz, block, realBlock);
         }
 
         if (block == realBlock && metadata == realMetadata) {
@@ -368,6 +395,172 @@ public class SchematicPrinter {
         // Done with this space for now (placed what we could; the rest has no item or no safe click yet).
         this.timeout[x][y][z] = (byte) ConfigurationHandler.timeout;
         return false;
+    }
+
+    /**
+     * Places, or fixes up, the schematic's ArchitectureCraft shape at (x, y, z). Block and meta say nothing for shapes
+     * (always ArchitectureCraft:shape, meta 0), so this compares tile entities and takes one step at a time: place the
+     * shape item with a click chosen for the wanted orientation, then hammer, second material and chisel clicks, each
+     * judged once the server's tile entity has arrived.
+     */
+    private boolean placeShape(World world, EntityClientPlayerMP player, int x, int y, int z, int wx, int wy, int wz,
+        Block block, Block realBlock) {
+        final IArchitecture architecture = ClientProxy.architecture;
+        final ShapeSpec want = architecture.specOf(block, this.schematic.getTileEntity(x, y, z));
+        if (want == null) {
+            return false;
+        }
+        final String key = wx + "," + wy + "," + wz;
+        ShapeAttempt attempt = this.shapeAttempts.get(key);
+        if (attempt != null && attempt.gaveUp) {
+            return false;
+        }
+
+        ShapeSpec have = null;
+        if (architecture.isShape(realBlock)) {
+            have = architecture.specOf(realBlock, world.getTileEntity(wx, wy, wz));
+            if (have == null) {
+                return false; // its tile entity hasn't arrived yet
+            }
+            if (have.equals(want) && realBlock == block) {
+                return false;
+            }
+            if (realBlock != block) {
+                giveUpShape(key, attempt, want, "the glowing and plain shape blocks differ; swap it by hand");
+                return false;
+            }
+        } else if (!realBlock.isReplaceable(world, wx, wy, wz)) {
+            return false;
+        }
+
+        if (attempt == null) {
+            attempt = new ShapeAttempt();
+            this.shapeAttempts.put(key, attempt);
+        }
+        final long now = world.getTotalWorldTime();
+        if (now - attempt.lastTick < SHAPE_SETTLE_TICKS) {
+            return false;
+        }
+
+        // Checked before planning a placement: the plan runs ArchitectureCraft's orientation code for every face and
+        // sixteenth of a click, which is not worth doing every tick for an item we don't have.
+        if (have == null && !this.minecraft.playerController.isInCreativeMode()
+            && getInventorySlotWithItem(player.inventory, architecture.itemFor(want), true) < 0) {
+            this.timeout[x][y][z] = (byte) ConfigurationHandler.timeout;
+            logShapeOnce(attempt, String.format("%d %d %d: no %s in the inventory", wx, wy, wz, want));
+            return false;
+        }
+
+        final StringBuilder why = new StringBuilder();
+        final ShapeAction action = architecture
+            .nextAction(world, player, wx, wy, wz, want, have, this::wantedShapeAt, why);
+        if (action == null) {
+            this.timeout[x][y][z] = (byte) ConfigurationHandler.timeout;
+            logShapeOnce(attempt, String.format("%d %d %d (%s): %s", wx, wy, wz, want, why));
+            return false;
+        }
+        if (action.type == ShapeAction.Type.PLACE ? attempt.places >= SHAPE_PLACES : attempt.fixUps >= SHAPE_FIX_UPS) {
+            giveUpShape(
+                key,
+                attempt,
+                want,
+                String.format(
+                    "%d placement and %d fix-up clicks did not get there (now: %s)",
+                    attempt.places,
+                    attempt.fixUps,
+                    have));
+            return false;
+        }
+        if (!this.minecraft.playerController.isInCreativeMode()
+            && getInventorySlotWithItem(player.inventory, action.item, action.matchNbt) < 0) {
+            this.timeout[x][y][z] = (byte) ConfigurationHandler.timeout;
+            logShapeOnce(
+                attempt,
+                String.format(
+                    "%d %d %d: need %s in the inventory to %s",
+                    wx,
+                    wy,
+                    wz,
+                    action.item.getDisplayName(),
+                    action.description));
+            return false;
+        }
+        if (!swapToItem(player.inventory, action.item, true, action.matchNbt)) {
+            return false;
+        }
+
+        attempt.lastTick = now;
+        attempt.lastLogged = null;
+        if (action.type == ShapeAction.Type.PLACE) attempt.places++;
+        else attempt.fixUps++;
+        this.timeout[x][y][z] = (byte) ConfigurationHandler.timeout;
+        ArchitectureLog.log(
+            "%d %d %d: %s (click %d %d %d side %d at %.4f %.4f %.4f; want %s; have %s)",
+            wx,
+            wy,
+            wz,
+            action.description,
+            action.x,
+            action.y,
+            action.z,
+            action.side,
+            action.hit.xCoord,
+            action.hit.yCoord,
+            action.hit.zCoord,
+            want,
+            have);
+
+        syncSneaking(player, action.sneak);
+        final boolean[] success = new boolean[1];
+        architecture.withSneak(
+            player,
+            action.sneak,
+            () -> success[0] = placeBlock(
+                world,
+                player,
+                player.getCurrentEquippedItem(),
+                action.x,
+                action.y,
+                action.z,
+                action.side,
+                action.hit));
+        syncSneaking(player, true);
+
+        final ItemStack held = player.getCurrentEquippedItem();
+        if (held != null && held.stackSize == 0) {
+            player.inventory.mainInventory[player.inventory.currentItem] = null;
+        }
+        return success[0] && !ConfigurationHandler.placeInstantly;
+    }
+
+    /** The shape the schematic wants at world (x, y, z), or null. */
+    private ShapeSpec wantedShapeAt(int wx, int wy, int wz) {
+        final int x = wx - this.schematic.position.x, y = wy - this.schematic.position.y,
+            z = wz - this.schematic.position.z;
+        if (x < 0 || y < 0
+            || z < 0
+            || x >= this.schematic.getWidth()
+            || y >= this.schematic.getHeight()
+            || z >= this.schematic.getLength()) {
+            return null;
+        }
+        return ClientProxy.architecture.specOf(this.schematic.getBlock(x, y, z), this.schematic.getTileEntity(x, y, z));
+    }
+
+    private void giveUpShape(String key, ShapeAttempt attempt, ShapeSpec want, String why) {
+        if (attempt == null) {
+            attempt = new ShapeAttempt();
+            this.shapeAttempts.put(key, attempt);
+        }
+        attempt.gaveUp = true;
+        ArchitectureLog.log("GAVE UP on %s at %s: %s; finish it by hand", want, key.replace(',', ' '), why);
+    }
+
+    private static void logShapeOnce(ShapeAttempt attempt, String line) {
+        if (!line.equals(attempt.lastLogged)) {
+            attempt.lastLogged = line;
+            ArchitectureLog.log("%s", line);
+        }
     }
 
     private static long spaceKey(int x, int y, int z) {
